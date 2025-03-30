@@ -14,16 +14,16 @@ loans <- tibble(
   default = rbinom(1000, 1, 0.07)
 )
 
-Filter to borrowers with credit_score < 600 who did default.
+# Filter to borrowers with credit_score < 600 who did default.
 
-Calculate average loan amount and default rate by credit score band (<600, 600-700, >700).
+# Calculate average loan amount and default rate by credit score band (<600, 600-700, >700).
 
-Add a column for loan_to_rate_ratio = loan_amount / mortgage_rate.
+# Add a column for loan_to_rate_ratio = loan_amount / mortgage_rate.
 
-Group by default and calculate average loan_to_rate_ratio.
+# Group by default and calculate average loan_to_rate_ratio.
 
 # Setting up the api key
-fredr_set_key("6c33d7d0d7fc3f739a751f2c742b9ae4")
+fredr_set_key(Sys.getenv("FRED_API_KEY"))
 
 
 # Pulling freddie Mac 30-Year fixrd mortgage rates (weekly data)
