@@ -6,6 +6,7 @@ library(lubridate)
 library(ggplot2)
 library(dplyr)
 library(usethis)
+library(caret)
 edit_r_environ()
 readRenviron(".Renviron")
 
@@ -164,16 +165,163 @@ test_data <- loans[-train_index,]
 # Getting the class size for the target in the training data.
 train_data %>%
   group_by(default) %>%
-  
+  summarise(
+    count = n()
+  ) %>%
+  mutate(
+    proportion = count / sum(count)
+  )
+
+# Train data class sizing and ratio
+# A tibble: 2 × 3
+# default count proportion
+# <int> <int>      <dbl>
+# 1       0   527      0.659
+# 2       1   273      0.341
+
+# Getting the class sizing for the test data.
+test_data %>%
+  group_by(default) %>% 
+  summarise(
+    count = n()
+  ) %>%
+  mutate(
+    proportion = count / sum(count)
+  )
+
+# Test data class sizing and proportion
+# A tibble: 2 × 3
+# default count proportion
+# <int> <int>      <dbl>
+# 1       0   138       0.69
+# 2       1    62       0.31
+
+# Given that there is only a 3% difference in the class sizing for the train/test split, I will not redo this split.
+
+
 
 # Setting up a logistic regression model to predict default status on the training data using all features except the ratio to prevent any multicollinearity.
 model <- glm(default ~ mortgage_rate + credit_score + loan_amount,
              data = train_data, family = binomial)
 
+summary(model)
 
 
+# Logistic model summary for the prediction of default status on the train_data
+# Call:
+#   glm(formula = default ~ mortgage_rate + credit_score + loan_amount, 
+#       family = binomial, data = train_data)
+# 
+# Coefficients:
+#   Estimate Std. Error z value Pr(>|z|)    
+# (Intercept)   -4.380e+00  1.285e+00  -3.408 0.000654 ***
+#   mortgage_rate  4.706e-01  5.885e-02   7.997 1.27e-15 ***
+#   credit_score  -2.712e-03  1.824e-03  -1.487 0.137048    
+# loan_amount    1.034e-05  8.777e-07  11.780  < 2e-16 ***
+#   ---
+#   Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+# 
+# (Dispersion parameter for binomial family taken to be 1)
+# 
+# Null deviance: 1026.98  on 799  degrees of freedom
+# Residual deviance:  780.52  on 796  degrees of freedom
+# AIC: 788.52
+# 
+# Number of Fisher Scoring iterations: 5
 
+##########################
+# As expected, the credit score feature is not significantly different from zero and does not have as much bearing on default as the other features.
+# The mortgage_rate, and loan amount are significant for an alpha up to 0.01. 
+# From here I will proceed to run the same model on the testing data and fine tune the threshold to enhance accuracy.
 
+# Getting the prediction probabilities on the test_data.
+test_data$pred_prob <- predict(model, newdata = test_data, type = "response")
+
+# Plotting the probability values vs default
+
+ggplot(test_data, aes(x = default, y = pred_prob)) +
+  geom_point(alpha = 0.5, color = "steelblue") +
+  labs(
+    title = "Predicted Probability of Default vs Default Status",
+    x = "Default", 
+    y = "Predicted Probability of Default"
+  ) + 
+  theme_minimal()
+
+# Based on the plot, to get the maximal value in accuracy from the model
+# I am going to use a baseline threshold value of 0.46 and finalize a value based on accuracy.
+test_data$pred_class <- ifelse(test_data$pred_prob > 0.46, 1, 0)
+test_data$pred_class <- factor(test_data$pred_class, levels = c(0, 1))
+test_data$default <- factor(test_data$default, levels = c(0, 1))
+
+# Plotting a confusion matrix to see the results.
+cm <- confusionMatrix(
+  test_data$pred_class, 
+  test_data$default, 
+  positive = "1"
+)
+
+cm
+
+# Confusion Matrix and Statistics - No class weights
+# 
+# Reference
+# Prediction   0   1
+# 0 117  13
+# 1  21  49
+# 
+# Accuracy : 0.83            
+# 95% CI : (0.7706, 0.8793)
+# No Information Rate : 0.69            
+# P-Value [Acc > NIR] : 4.79e-06        
+# 
+# Kappa : 0.6163          
+# 
+# Mcnemar's Test P-Value : 0.2299          
+#                                           
+#             Sensitivity : 0.7903          
+#             Specificity : 0.8478          
+#          Pos Pred Value : 0.7000          
+#          Neg Pred Value : 0.9000          
+#              Prevalence : 0.3100          
+#          Detection Rate : 0.2450          
+#    Detection Prevalence : 0.3500          
+#       Balanced Accuracy : 0.8191          
+#                                           
+#        'Positive' Class : 1 
+# 0.46 Ended up having the best results, based on accuracy.
+
+# Getting the f1-score because there is a slight class imbalance.
+precision <- cm$byClass["Precision"]
+recall <- cm$byClass["Recall"]
+
+f1 <-2*(precision*recall)/(precision+recall)
+f1
+
+# F1-Score
+# 0.7424242 
+
+conf_mat <- table(Predicted = test_data$pred_class, Actual = test_data$default)
+conf_mat_df <- as.data.frame(conf_mat)
+
+ggplot(conf_mat_df, aes(x = Actual, y = Predicted, fill=Freq))+
+  geom_tile(color = "white") +
+  geom_text(aes(label=Freq), size = 6, color="black")+
+  scale_fill_gradient(low = "lightblue", high = "steelblue")+
+  labs(
+    title = "Confusion Matrix - No Class Weights", 
+    x = "Actual Default", 
+    y = "Predicted Default"
+  ) + 
+  theme_minimal(base_size = 14)
+
+# Based on the results from this model, the performance is pretty solid,
+# the overall accuracy is around .82 and the f1-score is .74. I did not account for the class
+# imbalance through class weighting becuase I wanted to see what a baseline model would do.
+# I am going to plot the roc curve and then train one more model with included weights to see
+# if that improves the models performance on the testing data.
+
+roc
 
 
 
