@@ -7,6 +7,7 @@ library(ggplot2)
 library(dplyr)
 library(usethis)
 library(caret)
+library(pROC)
 edit_r_environ()
 readRenviron(".Renviron")
 
@@ -242,7 +243,7 @@ test_data$pred_prob <- predict(model, newdata = test_data, type = "response")
 ggplot(test_data, aes(x = default, y = pred_prob)) +
   geom_point(alpha = 0.5, color = "steelblue") +
   labs(
-    title = "Predicted Probability of Default vs Default Status",
+    title = "Predicted Probability of Default vs Default Status - No Class Weights",
     x = "Default", 
     y = "Predicted Probability of Default"
   ) + 
@@ -296,10 +297,15 @@ precision <- cm$byClass["Precision"]
 recall <- cm$byClass["Recall"]
 
 f1 <-2*(precision*recall)/(precision+recall)
-f1
 
-# F1-Score
-# 0.7424242 
+data.frame(
+  Metric = c("Precision", "Recall", "F1-Score"),
+  Value = c(precision, recall, f1))
+
+# Metric     Value
+# 1 Precision 0.7000000
+# 2    Recall 0.7903226
+# 3  F1-Score 0.7424242
 
 conf_mat <- table(Predicted = test_data$pred_class, Actual = test_data$default)
 conf_mat_df <- as.data.frame(conf_mat)
@@ -318,10 +324,161 @@ ggplot(conf_mat_df, aes(x = Actual, y = Predicted, fill=Freq))+
 # Based on the results from this model, the performance is pretty solid,
 # the overall accuracy is around .82 and the f1-score is .74. I did not account for the class
 # imbalance through class weighting becuase I wanted to see what a baseline model would do.
-# I am going to plot the roc curve and then train one more model with included weights to see
-# if that improves the models performance on the testing data.
+# I am going to run another model with class weights included and plot them both on the roc curve
+# to see how they measure up against each other.
 
-roc
+# Adding the weight column to give more weight to the minority class.
+train_data$weight <- ifelse(train_data$default == 1, 
+                            1 / mean(train_data$default), # Weight for the default (minority)
+                            1/ (1-mean(train_data$default)))# Weight for non-default (majority)
+train_data$default <- as.integer(train_data$default)  # or use `as.factor()` if preferred
+
+# Fit another model including class weights
+model_weighted <- glm(default ~ mortgage_rate + credit_score + loan_amount,
+                      data = train_data, 
+                      family = binomial, 
+                      weights = weight)
+
+summary(model_weighted)
+
+# Call:
+#   glm(formula = default ~ mortgage_rate + credit_score + loan_amount, 
+#       family = binomial, data = train_data, weights = weight)
+# 
+# Coefficients:
+#   Estimate Std. Error z value Pr(>|z|)    
+# (Intercept)   -3.548e+00  8.557e-01  -4.146 3.38e-05 ***
+#   mortgage_rate  4.624e-01  4.037e-02  11.453  < 2e-16 ***
+#   credit_score  -2.878e-03  1.221e-03  -2.357   0.0184 *  
+#   loan_amount    1.027e-05  5.886e-07  17.447  < 2e-16 ***
+#   ---
+#   Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+# 
+# (Dispersion parameter for binomial family taken to be 1)
+# 
+# Null deviance: 2218.1  on 799  degrees of freedom
+# Residual deviance: 1678.9  on 796  degrees of freedom
+# AIC: 1972.1
+# 
+# Number of Fisher Scoring iterations: 4
+
+##############################
+# This model shows some slightly different results. After including class weights in the model,
+# it seems that credit score has become a more significant predictor for default status.
+# It is now significant for an alpha value of 0.05. Perhaps this will enhance the predictive power of the model
+# on the test data.
+
+# Getting the new probabilities for the test data.
+test_data$pred_prob_weights <- predict(model_weighted, newdata = test_data, type="response")
+
+# Plotting the probability values vs default for the weighted model.
+
+ggplot(test_data, aes(x = default, y = pred_prob_weights)) +
+  geom_point(alpha = 0.5, color = "steelblue") +
+  labs(
+    title = "Predicted Probability of Default vs Default Status - Class Weights",
+    x = "Default", 
+    y = "Predicted Probability of Default"
+  ) + 
+  theme_minimal()
+
+# This plot looks like it pushed the default bin up a bit higher so I will be using a threshold of 0.625 to start.
+
+test_data$pred_class_weights <- ifelse(test_data$pred_prob_weights > 0.59, 1, 0)
+
+test_data$pred_class_weights <- factor(test_data$pred_class_weights, levels = c(0, 1))
+test_data$default <- factor(test_data$default, levels = c(0, 1))
+
+
+
+cm_weights <- confusionMatrix(
+  test_data$pred_class_weights, 
+  test_data$default, 
+  positive = "1"
+)
+
+cm_weights
+
+# Confusion Matrix and Statistics
+# 
+# Reference
+# Prediction   0   1
+# 0 115  12
+# 1  23  50
+# 
+# Accuracy : 0.825          
+# 95% CI : (0.7651, 0.875)
+# No Information Rate : 0.69           
+# P-Value [Acc > NIR] : 1.049e-05      
+# 
+# Kappa : 0.61           
+# 
+# Mcnemar's Test P-Value : 0.09097        
+#                                          
+#             Sensitivity : 0.8065         
+#             Specificity : 0.8333         
+#          Pos Pred Value : 0.6849         
+#          Neg Pred Value : 0.9055         
+#              Prevalence : 0.3100         
+#          Detection Rate : 0.2500         
+#    Detection Prevalence : 0.3650         
+#       Balanced Accuracy : 0.8199         
+#                                          
+#        'Positive' Class : 1 
+
+# The final threshold was 0.59 which showed the best results with only marginal improvement over the other model.
+# I could run two new models using both over/under sampling to try to improve the results.
+# I could also include more features to try and improve the model.
+# For now I am going to finish gettign the precision, recall and f1, then plot on the roc curve to compare each model.
+
+precision_weights <- cm_weights$byClass["Precision"]
+recall_weights <- cm_weights$byClass["Recall"]
+f1_weights <- 2*(precision_weights*recall_weights)/(precision_weights+recall_weights)
+
+data.frame(
+  Metric = c("Precision", "Recall", "F1-Score"), 
+  Value = c(precision_weights, recall_weights, f1_weights)
+)
+
+# Metric     Value
+# 1 Precision 0.6849315
+# 2    Recall 0.8064516
+# 3  F1-Score 0.7407407
+
+# The tradeoff in these metrics from these models is from the slight change in precision vs recall.
+# This second model has a slightly higher recall, so if the (fictitious) company
+# were to value False Negatives (missing a default) over false positives (falsely predicting default)
+# they should go with the second model over the first, even though it has a slightly lower precision and F1-Score.
+
+
+# Plotting the confusion matrix for the weighted model
+conf_mat_weights <- table(Predicted = test_data$pred_class_weights, Actual = test_data$default)
+conf_mat_df <- as.data.frame(conf_mat_weights)
+
+ggplot(conf_mat_df, aes(x = Actual, y = Predicted, fill=Freq))+
+  geom_tile(color = "white") +
+  geom_text(aes(label=Freq), size = 6, color="black")+
+  scale_fill_gradient(low = "salmon", high = "red")+
+  labs(
+    title = "Confusion Matrix - Class Weights", 
+    x = "Actual Default", 
+    y = "Predicted Default"
+  ) + 
+  theme_minimal(base_size = 14)
+
+
+# Plotting both models on the ROC curve.
+roc_unweighted <- roc(test_data$default, test_data$pred_prob, levels = c(0,1))
+roc_weighted <- roc(test_data$default, test_data$pred_prob_weights, levels = c(0, 1))
+
+
+plot(roc_unweighted, col = "#1f77b4", lwd = 2, main = "ROC Curve: Unweighted vs Weighted Models")
+plot(roc_weighted, col = "#d62728", lwd = 2, add = TRUE)
+
+legend("bottomright", legend = c("Unweighted", "Weighted"),
+       col = c("#1f77b4", "#d62728"), lwd = 2)
+
+
 
 
 
